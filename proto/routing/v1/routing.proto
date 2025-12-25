@@ -1,0 +1,268 @@
+// Routing API for Pingora Gateway Controller
+//
+// This API defines the contract between the Kubernetes controller (Go)
+// and the Pingora proxy (Rust) for dynamic route updates.
+
+syntax = "proto3";
+
+package routing.v1;
+
+option go_package = "github.com/lexfrei/pingora-gateway-controller/pkg/api/routing/v1;routingv1";
+
+// RoutingService manages dynamic route configuration for the Pingora proxy.
+service RoutingService {
+  // UpdateRoutes replaces all routes with the provided configuration.
+  // This is a full sync operation - all existing routes are replaced.
+  rpc UpdateRoutes(UpdateRoutesRequest) returns (UpdateRoutesResponse);
+
+  // GetRoutes returns all currently configured routes.
+  rpc GetRoutes(GetRoutesRequest) returns (GetRoutesResponse);
+
+  // Health returns the health status of the proxy.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// UpdateRoutesRequest contains the complete routing configuration.
+message UpdateRoutesRequest {
+  // List of all HTTP routes to configure.
+  repeated HTTPRoute http_routes = 1;
+
+  // List of all gRPC routes to configure.
+  repeated GRPCRoute grpc_routes = 2;
+
+  // Configuration version for tracking updates.
+  // Monotonically increasing, used for optimistic concurrency.
+  uint64 version = 3;
+}
+
+// UpdateRoutesResponse confirms the route update.
+message UpdateRoutesResponse {
+  // Whether the update was successful.
+  bool success = 1;
+
+  // Error message if success is false.
+  string error = 2;
+
+  // The version that was applied.
+  uint64 applied_version = 3;
+
+  // Number of HTTP routes configured.
+  uint32 http_route_count = 4;
+
+  // Number of gRPC routes configured.
+  uint32 grpc_route_count = 5;
+}
+
+// GetRoutesRequest requests the current route configuration.
+message GetRoutesRequest {
+  // Empty for now, but allows future filtering options.
+}
+
+// GetRoutesResponse returns the current route configuration.
+message GetRoutesResponse {
+  // List of all HTTP routes.
+  repeated HTTPRoute http_routes = 1;
+
+  // List of all gRPC routes.
+  repeated GRPCRoute grpc_routes = 2;
+
+  // Current configuration version.
+  uint64 version = 3;
+}
+
+// HealthRequest requests health status.
+message HealthRequest {}
+
+// HealthResponse returns health status.
+message HealthResponse {
+  // Whether the proxy is healthy.
+  bool healthy = 1;
+
+  // Human-readable status message.
+  string status = 2;
+
+  // Number of active connections.
+  uint64 active_connections = 3;
+
+  // Current configuration version.
+  uint64 config_version = 4;
+}
+
+// HTTPRoute defines an HTTP routing rule.
+message HTTPRoute {
+  // Unique identifier for this route (namespace/name).
+  string id = 1;
+
+  // Hostnames this route matches.
+  repeated string hostnames = 2;
+
+  // Routing rules for this HTTPRoute.
+  repeated HTTPRouteRule rules = 3;
+}
+
+// HTTPRouteRule defines a single HTTP routing rule.
+message HTTPRouteRule {
+  // Matchers for this rule.
+  repeated HTTPRouteMatch matches = 1;
+
+  // Backend references for this rule.
+  repeated Backend backends = 2;
+
+  // Request timeout in milliseconds.
+  uint64 timeout_ms = 3;
+
+  // Retry configuration.
+  RetryConfig retry = 4;
+}
+
+// HTTPRouteMatch defines conditions for matching an HTTP request.
+message HTTPRouteMatch {
+  // Path match configuration.
+  PathMatch path = 1;
+
+  // Header match conditions.
+  repeated HeaderMatch headers = 2;
+
+  // Query parameter match conditions.
+  repeated QueryParamMatch query_params = 3;
+
+  // HTTP method to match (GET, POST, etc.).
+  string method = 4;
+}
+
+// PathMatch defines how to match the request path.
+message PathMatch {
+  // Type of path match.
+  PathMatchType type = 1;
+
+  // Value to match against.
+  string value = 2;
+}
+
+// PathMatchType defines the type of path matching.
+enum PathMatchType {
+  PATH_MATCH_TYPE_UNSPECIFIED = 0;
+  PATH_MATCH_TYPE_EXACT = 1;
+  PATH_MATCH_TYPE_PREFIX = 2;
+  PATH_MATCH_TYPE_REGEX = 3;
+}
+
+// HeaderMatch defines a header matching condition.
+message HeaderMatch {
+  // Header name.
+  string name = 1;
+
+  // Header value to match.
+  string value = 2;
+
+  // Type of match.
+  HeaderMatchType type = 3;
+}
+
+// HeaderMatchType defines the type of header matching.
+enum HeaderMatchType {
+  HEADER_MATCH_TYPE_UNSPECIFIED = 0;
+  HEADER_MATCH_TYPE_EXACT = 1;
+  HEADER_MATCH_TYPE_REGEX = 2;
+}
+
+// QueryParamMatch defines a query parameter matching condition.
+message QueryParamMatch {
+  // Parameter name.
+  string name = 1;
+
+  // Parameter value to match.
+  string value = 2;
+
+  // Type of match.
+  QueryParamMatchType type = 3;
+}
+
+// QueryParamMatchType defines the type of query parameter matching.
+enum QueryParamMatchType {
+  QUERY_PARAM_MATCH_TYPE_UNSPECIFIED = 0;
+  QUERY_PARAM_MATCH_TYPE_EXACT = 1;
+  QUERY_PARAM_MATCH_TYPE_REGEX = 2;
+}
+
+// GRPCRoute defines a gRPC routing rule.
+message GRPCRoute {
+  // Unique identifier for this route (namespace/name).
+  string id = 1;
+
+  // Hostnames this route matches.
+  repeated string hostnames = 2;
+
+  // Routing rules for this GRPCRoute.
+  repeated GRPCRouteRule rules = 3;
+}
+
+// GRPCRouteRule defines a single gRPC routing rule.
+message GRPCRouteRule {
+  // Matchers for this rule.
+  repeated GRPCRouteMatch matches = 1;
+
+  // Backend references for this rule.
+  repeated Backend backends = 2;
+}
+
+// GRPCRouteMatch defines conditions for matching a gRPC request.
+message GRPCRouteMatch {
+  // gRPC service name to match.
+  GRPCMethodMatch method = 1;
+
+  // Header match conditions.
+  repeated HeaderMatch headers = 2;
+}
+
+// GRPCMethodMatch defines how to match gRPC service/method.
+message GRPCMethodMatch {
+  // Type of method match.
+  GRPCMethodMatchType type = 1;
+
+  // Service name (e.g., "example.MyService").
+  string service = 2;
+
+  // Method name (e.g., "DoSomething").
+  string method = 3;
+}
+
+// GRPCMethodMatchType defines the type of gRPC method matching.
+enum GRPCMethodMatchType {
+  GRPC_METHOD_MATCH_TYPE_UNSPECIFIED = 0;
+  GRPC_METHOD_MATCH_TYPE_EXACT = 1;
+  GRPC_METHOD_MATCH_TYPE_REGEX = 2;
+}
+
+// Backend defines a backend service endpoint.
+message Backend {
+  // Backend address (host:port).
+  string address = 1;
+
+  // Weight for load balancing (1-100).
+  uint32 weight = 2;
+
+  // Protocol to use for this backend.
+  BackendProtocol protocol = 3;
+}
+
+// BackendProtocol defines the protocol for backend connections.
+enum BackendProtocol {
+  BACKEND_PROTOCOL_UNSPECIFIED = 0;
+  BACKEND_PROTOCOL_HTTP = 1;
+  BACKEND_PROTOCOL_HTTPS = 2;
+  BACKEND_PROTOCOL_H2C = 3;
+  BACKEND_PROTOCOL_H2 = 4;
+}
+
+// RetryConfig defines retry behavior for failed requests.
+message RetryConfig {
+  // Number of retry attempts.
+  uint32 attempts = 1;
+
+  // Backoff duration between retries in milliseconds.
+  uint64 backoff_ms = 2;
+
+  // HTTP status codes that trigger a retry.
+  repeated uint32 retry_on_status_codes = 3;
+}

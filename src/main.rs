@@ -5,9 +5,11 @@
 
 mod gen;
 mod grpc;
+mod health;
 mod proxy;
 mod store;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -41,6 +43,19 @@ fn main() -> Result<()> {
     let store = Arc::new(RouteStore::new());
     let health_tracker = Arc::new(HealthTracker::new(3));
     let router = Router::new(store.clone(), health_tracker);
+
+    // Spawn health server in background
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Runtime::new().expect("failed to create health runtime");
+        rt.block_on(async {
+            let addr: SocketAddr = "[::]:9090".parse().expect("invalid health address");
+            tracing::info!(%addr, "health server listening");
+
+            if let Err(e) = health::start_health_server(addr).await {
+                tracing::error!(error = %e, "health server error");
+            }
+        });
+    });
 
     // Spawn gRPC server in background
     let grpc_store = store.clone();

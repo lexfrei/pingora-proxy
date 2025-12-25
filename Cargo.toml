@@ -41,6 +41,11 @@ async-trait = "0.1"
 # Concurrent data structures
 dashmap = "6"
 
+# Health server
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
 [build-dependencies]
 tonic-build = "0.12"
 
