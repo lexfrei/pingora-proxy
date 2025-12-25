@@ -1449,6 +1449,7 @@ name = "pingora-proxy"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "dashmap",
  "pingora",
  "pingora-core",

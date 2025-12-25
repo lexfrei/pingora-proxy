@@ -124,7 +124,7 @@ impl LoadBalancer {
         // Expand backends by their weights
         let expanded: Vec<&Backend> = healthy
             .iter()
-            .flat_map(|b| std::iter::repeat(*b).take(b.weight.max(1) as usize))
+            .flat_map(|b| std::iter::repeat_n(*b, b.weight.max(1) as usize))
             .collect();
 
         if expanded.is_empty() {

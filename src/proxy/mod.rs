@@ -4,8 +4,10 @@
 //! to appropriate backends based on hostname and path,
 //! with weighted round-robin load balancing and health tracking.
 
+mod gateway;
 mod router;
 mod upstream;
 
+pub use gateway::GatewayProxy;
 pub use router::Router;
-pub use upstream::{HealthStatus, HealthTracker, LoadBalancer};
+pub use upstream::HealthTracker;

@@ -11,18 +11,21 @@ mod store;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tonic::transport::Server;
+use pingora_core::server::Server;
+use pingora_core::server::configuration::Opt;
+use pingora_proxy::http_proxy_service;
+use tonic::transport::Server as TonicServer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::grpc::RoutingServiceImpl;
+use crate::proxy::{GatewayProxy, HealthTracker, Router};
 use crate::routing_api::routing_service_server::RoutingServiceServer;
 use crate::store::RouteStore;
 
 // Re-export generated types for convenience
 pub use gen::routing::v1 as routing_api;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
@@ -34,20 +37,42 @@ async fn main() -> Result<()> {
 
     tracing::info!("pingora-proxy starting");
 
-    // Create shared route store
+    // Create shared components
     let store = Arc::new(RouteStore::new());
+    let health_tracker = Arc::new(HealthTracker::new(3));
+    let router = Router::new(store.clone(), health_tracker);
 
-    // Create gRPC service
-    let routing_service = RoutingServiceImpl::new(store.clone());
+    // Spawn gRPC server in background
+    let grpc_store = store.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        rt.block_on(async {
+            let routing_service = RoutingServiceImpl::new(grpc_store);
+            let addr = "[::]:50051".parse().expect("invalid gRPC address");
+            tracing::info!(%addr, "gRPC server listening");
 
-    // Start gRPC server
-    let addr = "[::]:50051".parse()?;
-    tracing::info!(%addr, "gRPC server listening");
+            if let Err(e) = TonicServer::builder()
+                .add_service(RoutingServiceServer::new(routing_service))
+                .serve(addr)
+                .await
+            {
+                tracing::error!(error = %e, "gRPC server error");
+            }
+        });
+    });
 
-    Server::builder()
-        .add_service(RoutingServiceServer::new(routing_service))
-        .serve(addr)
-        .await?;
+    // Create Pingora server
+    let opt = Opt::default();
+    let mut server = Server::new(Some(opt))?;
+    server.bootstrap();
 
-    Ok(())
+    // Create and add HTTP proxy service
+    let gateway = GatewayProxy::new(router);
+    let mut proxy_service = http_proxy_service(&server.configuration, gateway);
+    proxy_service.add_tcp("0.0.0.0:8080");
+
+    tracing::info!(addr = "0.0.0.0:8080", "HTTP proxy listening");
+
+    server.add_service(proxy_service);
+    server.run_forever();
 }

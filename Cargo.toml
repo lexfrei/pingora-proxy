@@ -35,6 +35,9 @@ serde_json = "1"
 anyhow = "1"
 thiserror = "2"
 
+# Async traits
+async-trait = "0.1"
+
 # Concurrent data structures
 dashmap = "6"
 
