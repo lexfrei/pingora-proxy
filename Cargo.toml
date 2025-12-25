@@ -38,6 +38,9 @@ thiserror = "2"
 # Concurrent data structures
 dashmap = "6"
 
+# Randomization (for weighted backend selection)
+rand = "0.8"
+
 [build-dependencies]
 tonic-build = "0.12"
 

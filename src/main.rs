@@ -5,6 +5,7 @@
 
 mod gen;
 mod grpc;
+mod proxy;
 mod store;
 
 use std::sync::Arc;
