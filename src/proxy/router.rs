@@ -5,35 +5,46 @@
 
 use std::sync::Arc;
 
-use rand::Rng;
-
 use crate::routing_api::{Backend, HttpRouteMatch, PathMatchType};
 use crate::store::RouteStore;
 
+use super::upstream::{HealthTracker, LoadBalancer};
+
 /// Routes incoming HTTP requests to appropriate backends.
 ///
-/// Thread-safe via shared reference to RouteStore.
+/// Thread-safe via shared reference to RouteStore and LoadBalancer.
 /// Implements Gateway API matching priority:
 /// - Hostname: Exact > Wildcard > Empty (match all)
 /// - Path: Exact > Prefix (longer wins) > Regex
+///
+/// Uses weighted round-robin load balancing with health tracking.
 pub struct Router {
     store: Arc<RouteStore>,
+    load_balancer: LoadBalancer,
 }
 
 impl Router {
-    /// Creates a new Router with the given route store.
-    pub fn new(store: Arc<RouteStore>) -> Self {
-        Self { store }
+    /// Creates a new Router with the given route store and health tracker.
+    pub fn new(store: Arc<RouteStore>, health_tracker: Arc<HealthTracker>) -> Self {
+        Self {
+            store,
+            load_balancer: LoadBalancer::new(health_tracker),
+        }
+    }
+
+    /// Returns a reference to the health tracker.
+    pub fn health_tracker(&self) -> &Arc<HealthTracker> {
+        self.load_balancer.health_tracker()
     }
 
     /// Finds a backend for the given host and path.
     ///
-    /// Returns `None` if no matching route is found.
+    /// Returns `None` if no matching route is found or all backends are unhealthy.
     pub fn find_backend(&self, host: &str, path: &str) -> Option<Backend> {
         let routes = self.store.get_http_routes();
 
-        // Track best match: (hostname_score, path_score, backend)
-        let mut best_match: Option<(usize, usize, Backend)> = None;
+        // Track best match: (hostname_score, path_score, backends)
+        let mut best_match: Option<(usize, usize, Vec<Backend>)> = None;
 
         for route in &routes {
             // Check hostname match
@@ -58,14 +69,16 @@ impl Router {
                     };
 
                     if is_better {
-                        let backend = Self::select_backend(&rule.backends);
-                        best_match = Some((hostname_score, path_score, backend));
+                        best_match = Some((hostname_score, path_score, rule.backends.clone()));
                     }
                 }
             }
         }
 
-        best_match.map(|(_, _, b)| b)
+        // Use load balancer to select from best matching rule's backends
+        best_match.and_then(|(_, _, backends)| {
+            self.load_balancer.next(&backends).cloned()
+        })
     }
 
     /// Returns the best hostname score for a list of patterns.
@@ -194,27 +207,6 @@ impl Router {
         false
     }
 
-    /// Selects a backend using weighted random selection.
-    fn select_backend(backends: &[Backend]) -> Backend {
-        if backends.len() == 1 {
-            return backends[0].clone();
-        }
-
-        // Weighted random selection
-        let total_weight: u32 = backends.iter().map(|b| b.weight.max(1)).sum();
-        let mut rng = rand::thread_rng();
-        let mut threshold = rng.gen_range(0..total_weight);
-
-        for backend in backends {
-            let w = backend.weight.max(1);
-            if threshold < w {
-                return backend.clone();
-            }
-            threshold -= w;
-        }
-
-        backends[0].clone()
-    }
 }
 
 #[cfg(test)]
@@ -223,6 +215,14 @@ mod tests {
     use crate::routing_api::{BackendProtocol, HttpRoute, HttpRouteMatch, HttpRouteRule, PathMatch};
 
     // ========== Test Helpers ==========
+
+    fn make_health_tracker() -> Arc<HealthTracker> {
+        Arc::new(HealthTracker::new(3))
+    }
+
+    fn make_router(store: Arc<RouteStore>) -> Router {
+        Router::new(store, make_health_tracker())
+    }
 
     fn make_backend(address: &str, weight: u32) -> Backend {
         Backend {
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn test_router_new_with_empty_store() {
         let store = Arc::new(RouteStore::new());
-        let router = Router::new(store);
+        let router = make_router(store);
         assert!(router.find_backend("example.com", "/").is_none());
     }
 
@@ -383,7 +383,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         let result = router.find_backend("example.com", "/");
         assert!(result.is_some());
@@ -403,7 +403,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("other.com", "/").is_none());
     }
@@ -416,7 +416,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("any.host.com", "/").is_some());
         assert!(router.find_backend("another.example.org", "/").is_some());
@@ -437,7 +437,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("foo.example.com", "/").is_some());
         assert!(router.find_backend("bar.example.com", "/").is_some());
@@ -458,7 +458,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         // Exact match should win
         let result = router.find_backend("api.example.com", "/");
@@ -482,7 +482,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("a.com", "/").is_some());
         assert!(router.find_backend("b.com", "/").is_some());
@@ -504,7 +504,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("example.com", "/api/v1").is_some());
         assert!(router.find_backend("example.com", "/api/v1/users").is_none());
@@ -524,7 +524,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("example.com", "/api").is_some());
         assert!(router.find_backend("example.com", "/api/").is_some());
@@ -547,7 +547,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("example.com", "/api").is_some());
         assert!(router.find_backend("example.com", "/api/").is_some());
@@ -566,7 +566,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         // Longer prefix should win
         let result = router.find_backend("example.com", "/api/v1/users");
@@ -588,7 +588,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         // Exact match should win even though prefix also matches
         let result = router.find_backend("example.com", "/api/health");
@@ -607,7 +607,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("example.com", "/").is_some());
         assert!(router.find_backend("example.com", "/any/path").is_some());
@@ -644,7 +644,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         // /api/users matches first rule better (longer prefix)
         let result = router.find_backend("example.com", "/api/users");
@@ -668,7 +668,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         let result = router.find_backend("example.com", "/");
         assert_eq!(result.unwrap().address, "backend:8080");
@@ -687,7 +687,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         // For MVP: just verify we get one of the backends
         let result = router.find_backend("example.com", "/");
@@ -713,7 +713,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Arc::new(Router::new(store));
+        let router = Arc::new(make_router(store));
 
         let mut handles = vec![];
         for _ in 0..10 {
@@ -746,7 +746,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Arc::new(Router::new(Arc::clone(&store)));
+        let router = Arc::new(make_router(Arc::clone(&store)));
 
         // Start routing in background
         let router_clone = Arc::clone(&router);
@@ -789,7 +789,7 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         // Host header might include port - should still match
         assert!(router.find_backend("example.com:443", "/").is_some());
@@ -809,10 +809,129 @@ mod tests {
             vec![],
             1,
         );
-        let router = Router::new(store);
+        let router = make_router(store);
 
         assert!(router.find_backend("example.com", "/").is_some());
         assert!(router.find_backend("EXAMPLE.COM", "/").is_some());
         assert!(router.find_backend("Example.Com", "/").is_some());
+    }
+
+    // ========== Phase 7: Router Integration with LoadBalancer ==========
+
+    #[test]
+    fn test_router_uses_load_balancer() {
+        // Verify round-robin, not random selection
+        let store = Arc::new(RouteStore::new());
+        store.update_routes(
+            vec![make_route_multi_backends(
+                "r1",
+                vec!["example.com"],
+                "/",
+                vec![("a:8080", 1), ("b:8080", 1)],
+            )],
+            vec![],
+            1,
+        );
+        let health_tracker = Arc::new(HealthTracker::new(3));
+        let router = Router::new(store, health_tracker);
+
+        // Round-robin should alternate predictably
+        let selections: Vec<String> = (0..4)
+            .map(|_| router.find_backend("example.com", "/").unwrap().address.clone())
+            .collect();
+        assert_eq!(selections, vec!["a:8080", "b:8080", "a:8080", "b:8080"]);
+    }
+
+    #[test]
+    fn test_router_skips_unhealthy_backends() {
+        let store = Arc::new(RouteStore::new());
+        store.update_routes(
+            vec![make_route_multi_backends(
+                "r1",
+                vec!["example.com"],
+                "/",
+                vec![("a:8080", 1), ("b:8080", 1), ("c:8080", 1)],
+            )],
+            vec![],
+            1,
+        );
+        let health_tracker = Arc::new(HealthTracker::new(3));
+        let router = Router::new(store, Arc::clone(&health_tracker));
+
+        // Mark b as unhealthy
+        health_tracker.record_failure("b:8080");
+        health_tracker.record_failure("b:8080");
+        health_tracker.record_failure("b:8080");
+
+        // Should skip b
+        let selections: Vec<String> = (0..4)
+            .map(|_| router.find_backend("example.com", "/").unwrap().address.clone())
+            .collect();
+        assert_eq!(selections, vec!["a:8080", "c:8080", "a:8080", "c:8080"]);
+    }
+
+    #[test]
+    fn test_router_returns_none_when_all_unhealthy() {
+        let store = Arc::new(RouteStore::new());
+        store.update_routes(
+            vec![make_route_multi_backends(
+                "r1",
+                vec!["example.com"],
+                "/",
+                vec![("a:8080", 1), ("b:8080", 1)],
+            )],
+            vec![],
+            1,
+        );
+        let health_tracker = Arc::new(HealthTracker::new(3));
+        let router = Router::new(store, Arc::clone(&health_tracker));
+
+        // Mark all as unhealthy
+        health_tracker.record_failure("a:8080");
+        health_tracker.record_failure("a:8080");
+        health_tracker.record_failure("a:8080");
+        health_tracker.record_failure("b:8080");
+        health_tracker.record_failure("b:8080");
+        health_tracker.record_failure("b:8080");
+
+        // Should return None (graceful degradation)
+        assert!(router.find_backend("example.com", "/").is_none());
+    }
+
+    #[test]
+    fn test_router_different_routes_share_health_tracker() {
+        let store = Arc::new(RouteStore::new());
+        store.update_routes(
+            vec![
+                make_route_multi_backends(
+                    "r1",
+                    vec!["a.example.com"],
+                    "/",
+                    vec![("shared:8080", 1), ("only-a:8080", 1)],
+                ),
+                make_route_multi_backends(
+                    "r2",
+                    vec!["b.example.com"],
+                    "/",
+                    vec![("shared:8080", 1), ("only-b:8080", 1)],
+                ),
+            ],
+            vec![],
+            1,
+        );
+        let health_tracker = Arc::new(HealthTracker::new(3));
+        let router = Router::new(store, Arc::clone(&health_tracker));
+
+        // Mark shared backend as unhealthy
+        health_tracker.record_failure("shared:8080");
+        health_tracker.record_failure("shared:8080");
+        health_tracker.record_failure("shared:8080");
+
+        // Both routes should skip the shared unhealthy backend
+        let a_backend = router.find_backend("a.example.com", "/").unwrap();
+        assert_eq!(a_backend.address, "only-a:8080");
+
+        let b_backend = router.find_backend("b.example.com", "/").unwrap();
+        assert_eq!(b_backend.address, "only-b:8080");
     }
 }
