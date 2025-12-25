@@ -1,0 +1,47 @@
+[package]
+name = "pingora-proxy"
+version = "0.0.1"
+edition = "2021"
+authors = ["Aleksei Sviridkin <f@lex.la>"]
+license = "BSD-3-Clause"
+description = "Pingora-based reverse proxy with gRPC API for dynamic route updates"
+repository = "https://github.com/lexfrei/pingora-proxy"
+
+[dependencies]
+# Pingora framework
+pingora = "0.5"
+pingora-core = "0.5"
+pingora-http = "0.5"
+pingora-proxy = "0.5"
+pingora-load-balancing = "0.5"
+
+# gRPC server
+tonic = "0.12"
+prost = "0.13"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Logging and metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+prometheus = "0.13"
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Concurrent data structures
+dashmap = "6"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
