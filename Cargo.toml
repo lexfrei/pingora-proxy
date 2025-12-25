@@ -10,7 +10,7 @@ repository = "https://github.com/lexfrei/pingora-proxy"
 [dependencies]
 # Pingora framework
 pingora = "0.5"
-pingora-core = "0.5"
+pingora-core = "0.6"
 pingora-http = "0.5"
 pingora-proxy = "0.5"
 pingora-load-balancing = "0.5"
